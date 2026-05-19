@@ -1,0 +1,1080 @@
+from flask import Flask, render_template_string, request, redirect, url_for, session
+import sqlite3
+from datetime import datetime, date
+
+app = Flask(__name__)
+app.secret_key = "citasya_secret_key_2026"
+
+DB_NAME = "citasya.db"
+
+# ---------------------------------------------------
+# CREAR TABLAS
+# ---------------------------------------------------
+def crear_tablas():
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            rol TEXT NOT NULL
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS citas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paciente TEXT NOT NULL,
+            doctor TEXT NOT NULL,
+            fecha TEXT NOT NULL,
+            hora TEXT NOT NULL,
+            motivo TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'Pendiente'
+        )
+    """)
+
+    conexion.commit()
+    conexion.close()
+
+crear_tablas()
+
+# ---------------------------------------------------
+# FUNCIONES BD
+# ---------------------------------------------------
+def registrar_usuario(usuario, password, rol):
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    try:
+        cursor.execute(
+            "INSERT INTO usuarios (usuario, password, rol) VALUES (?, ?, ?)",
+            (usuario, password, rol)
+        )
+        conexion.commit()
+        conexion.close()
+        return True, None
+
+    except sqlite3.IntegrityError:
+        conexion.close()
+        return False, "El usuario ya existe. Intenta con otro nombre."
+
+    except Exception as e:
+        conexion.close()
+        return False, "Error del sistema: " + str(e)
+
+
+def validar_login(usuario, password):
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute(
+        "SELECT usuario, rol FROM usuarios WHERE usuario = ? AND password = ?",
+        (usuario, password)
+    )
+
+    resultado = cursor.fetchone()
+    conexion.close()
+
+    return resultado
+
+
+def obtener_doctores():
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("SELECT usuario FROM usuarios WHERE rol = 'Medico'")
+    doctores = cursor.fetchall()
+
+    conexion.close()
+    return doctores
+
+
+def crear_cita(paciente, doctor, fecha, hora, motivo):
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("""
+        INSERT INTO citas (paciente, doctor, fecha, hora, motivo, estado)
+        VALUES (?, ?, ?, ?, ?, 'Pendiente')
+    """, (paciente, doctor, fecha, hora, motivo))
+
+    conexion.commit()
+    conexion.close()
+
+
+def obtener_citas_paciente(paciente):
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("""
+        SELECT doctor, fecha, hora, motivo, estado
+        FROM citas
+        WHERE paciente = ?
+        ORDER BY fecha DESC, hora DESC
+    """, (paciente,))
+
+    citas = cursor.fetchall()
+    conexion.close()
+    return citas
+
+
+def obtener_citas_pendientes_paciente(paciente):
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("""
+        SELECT doctor, fecha, hora, motivo, estado
+        FROM citas
+        WHERE paciente = ? AND estado = 'Pendiente'
+        ORDER BY fecha ASC, hora ASC
+    """, (paciente,))
+
+    citas = cursor.fetchall()
+    conexion.close()
+    return citas
+
+
+def obtener_citas_doctor_hoy(doctor):
+    hoy = date.today().strftime("%Y-%m-%d")
+
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("""
+        SELECT paciente, fecha, hora, motivo, estado
+        FROM citas
+        WHERE doctor = ? AND fecha = ?
+        ORDER BY hora ASC
+    """, (doctor, hoy))
+
+    citas = cursor.fetchall()
+    conexion.close()
+    return citas
+
+
+def obtener_proximas_citas_doctor(doctor):
+    hoy = date.today().strftime("%Y-%m-%d")
+
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("""
+        SELECT paciente, fecha, hora, motivo, estado
+        FROM citas
+        WHERE doctor = ? AND fecha >= ?
+        ORDER BY fecha ASC, hora ASC
+    """, (doctor, hoy))
+
+    citas = cursor.fetchall()
+    conexion.close()
+    return citas
+
+
+# ---------------------------------------------------
+# FRONT LOGIN (VERDE/BLANCO)
+# ---------------------------------------------------
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - CITASYA</title>
+
+    <style>
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Arial, sans-serif;
+            height: 100vh;
+            background: linear-gradient(135deg, #0f5132, #198754, #d1e7dd);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 950px;
+            max-width: 100%;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            border-radius: 22px;
+            overflow: hidden;
+            box-shadow: 0px 25px 70px rgba(0,0,0,0.4);
+        }
+
+        .left {
+            padding: 55px;
+            color: white;
+            background: rgba(0,0,0,0.15);
+            backdrop-filter: blur(12px);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .left h1 {
+            margin: 0;
+            font-size: 45px;
+            font-weight: 900;
+            letter-spacing: 1px;
+        }
+
+        .left p {
+            margin-top: 16px;
+            font-size: 15px;
+            line-height: 1.7;
+            opacity: 0.95;
+        }
+
+        .left .tag {
+            margin-top: 22px;
+            padding: 12px 16px;
+            border-radius: 14px;
+            background: rgba(255,255,255,0.18);
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .right {
+            background: white;
+            padding: 55px 45px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .right h2 {
+            margin: 0;
+            font-size: 30px;
+            color: #0f5132;
+            font-weight: 900;
+        }
+
+        .right p {
+            margin-top: 10px;
+            margin-bottom: 30px;
+            color: #6c757d;
+            font-size: 14px;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            margin-bottom: 7px;
+            color: #0f5132;
+            font-weight: 700;
+        }
+
+        input {
+            width: 100%;
+            padding: 13px 14px;
+            border-radius: 14px;
+            border: 1px solid #d1e7dd;
+            outline: none;
+            font-size: 14px;
+            background: #f8f9fa;
+            transition: 0.2s;
+            margin-bottom: 18px;
+        }
+
+        input:focus {
+            border-color: #198754;
+            box-shadow: 0px 0px 0px 4px rgba(25,135,84,0.2);
+            background: white;
+        }
+
+        button {
+            width: 100%;
+            padding: 13px;
+            border: none;
+            border-radius: 14px;
+            background: #198754;
+            color: white;
+            font-size: 15px;
+            font-weight: 800;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            background: #157347;
+            box-shadow: 0px 15px 30px rgba(25,135,84,0.35);
+        }
+
+        .link {
+            margin-top: 18px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .link a {
+            color: #198754;
+            text-decoration: none;
+            font-weight: 800;
+        }
+
+        .error {
+            margin-top: 18px;
+            padding: 12px;
+            border-radius: 14px;
+            background: #f8d7da;
+            border: 1px solid #dc3545;
+            color: #842029;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .success {
+            margin-top: 18px;
+            padding: 12px;
+            border-radius: 14px;
+            background: #d1e7dd;
+            border: 1px solid #198754;
+            color: #0f5132;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .footer {
+            margin-top: 30px;
+            text-align: center;
+            font-size: 12px;
+            color: #adb5bd;
+        }
+
+        @media(max-width: 850px){
+            .container {
+                grid-template-columns: 1fr;
+            }
+            .left {
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="left">
+        <h1>CITASYA</h1>
+        <p>
+            Plataforma digital diseñada para la gestión de citas médicas.
+            Optimiza agendas, reduce tiempos de espera y mejora la atención.
+        </p>
+        <div class="tag">
+            ✔ Seguridad | ✔ Historial Clínico | ✔ Agenda Médica
+        </div>
+    </div>
+
+    <div class="right">
+        <h2>Iniciar Sesión</h2>
+        <p>Ingresa para acceder a tus funciones según tu rol.</p>
+
+        <form method="POST">
+            <label>Usuario</label>
+            <input type="text" name="usuario" placeholder="Ej: paciente01" required>
+
+            <label>Contraseña</label>
+            <input type="password" name="password" placeholder="••••••••" required>
+
+            <button type="submit">Ingresar</button>
+        </form>
+
+        <div class="link">
+            ¿No tienes cuenta? <a href="/register">Registrarse</a>
+        </div>
+
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+
+        {% if success %}
+        <div class="success">{{ success }}</div>
+        {% endif %}
+
+        <div class="footer">
+            CITASYA © 2026 - Sistema de Citas Médicas
+        </div>
+    </div>
+
+</div>
+
+</body>
+</html>
+"""
+
+# ---------------------------------------------------
+# FRONT REGISTRO
+# ---------------------------------------------------
+REGISTER_HTML = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registro - CITASYA</title>
+
+    <style>
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Arial, sans-serif;
+            height: 100vh;
+            background: linear-gradient(135deg, #0f5132, #198754, #d1e7dd);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .box {
+            width: 520px;
+            max-width: 100%;
+            background: white;
+            border-radius: 22px;
+            padding: 55px 45px;
+            box-shadow: 0px 25px 70px rgba(0,0,0,0.4);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 32px;
+            font-weight: 900;
+            color: #0f5132;
+            text-align: center;
+        }
+
+        p {
+            margin-top: 12px;
+            margin-bottom: 30px;
+            text-align: center;
+            color: #6c757d;
+            font-size: 14px;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            margin-bottom: 7px;
+            color: #0f5132;
+            font-weight: 700;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 13px 14px;
+            border-radius: 14px;
+            border: 1px solid #d1e7dd;
+            outline: none;
+            font-size: 14px;
+            background: #f8f9fa;
+            transition: 0.2s;
+            margin-bottom: 18px;
+        }
+
+        input:focus, select:focus {
+            border-color: #198754;
+            box-shadow: 0px 0px 0px 4px rgba(25,135,84,0.2);
+            background: white;
+        }
+
+        button {
+            width: 100%;
+            padding: 13px;
+            border: none;
+            border-radius: 14px;
+            background: #198754;
+            color: white;
+            font-size: 15px;
+            font-weight: 800;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            background: #157347;
+            box-shadow: 0px 15px 30px rgba(25,135,84,0.35);
+        }
+
+        .link {
+            margin-top: 18px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .link a {
+            color: #198754;
+            text-decoration: none;
+            font-weight: 800;
+        }
+
+        .error {
+            margin-top: 18px;
+            padding: 12px;
+            border-radius: 14px;
+            background: #f8d7da;
+            border: 1px solid #dc3545;
+            color: #842029;
+            font-weight: 700;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="box">
+    <h1>Registro CITASYA</h1>
+    <p>Crea tu cuenta y accede a los servicios médicos digitales.</p>
+
+    <form method="POST">
+        <label>Usuario</label>
+        <input type="text" name="usuario" placeholder="Ej: paciente01" required>
+
+        <label>Contraseña</label>
+        <input type="password" name="password" placeholder="Mínimo 6 caracteres" required>
+
+        <label>Rol</label>
+        <select name="rol" required>
+            <option value="">Seleccione un rol</option>
+            <option value="Paciente">Paciente</option>
+            <option value="Medico">Médico</option>
+            <option value="Administrador">Administrador</option>
+        </select>
+
+        <button type="submit">Registrarse</button>
+    </form>
+
+    <div class="link">
+        ¿Ya tienes cuenta? <a href="/">Volver al Login</a>
+    </div>
+
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+</div>
+
+</body>
+</html>
+"""
+
+# ---------------------------------------------------
+# DASHBOARD HTML (CAMBIA SEGÚN ROL)
+# ---------------------------------------------------
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - CITASYA</title>
+
+    <style>
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Arial, sans-serif;
+            background: #f3fdf7;
+        }
+
+        .navbar {
+            background: #198754;
+            color: white;
+            padding: 18px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .navbar h1 {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 900;
+            letter-spacing: 1px;
+        }
+
+        .navbar .user {
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .logout {
+            margin-left: 15px;
+            padding: 10px 15px;
+            border-radius: 12px;
+            background: white;
+            color: #198754;
+            text-decoration: none;
+            font-weight: 900;
+            font-size: 13px;
+            transition: 0.2s;
+        }
+
+        .logout:hover {
+            background: #d1e7dd;
+        }
+
+        .container {
+            padding: 35px;
+            max-width: 1100px;
+            margin: auto;
+        }
+
+        .title {
+            font-size: 28px;
+            font-weight: 900;
+            color: #0f5132;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #6c757d;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 18px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            padding: 22px;
+            border-radius: 18px;
+            box-shadow: 0px 8px 20px rgba(0,0,0,0.08);
+            border: 1px solid #d1e7dd;
+        }
+
+        .card h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 16px;
+            font-weight: 900;
+            color: #198754;
+        }
+
+        .card p {
+            margin: 0;
+            color: #6c757d;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .big-card {
+            background: white;
+            padding: 25px;
+            border-radius: 18px;
+            box-shadow: 0px 8px 20px rgba(0,0,0,0.08);
+            border: 1px solid #d1e7dd;
+            margin-top: 20px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            font-size: 14px;
+        }
+
+        th {
+            background: #d1e7dd;
+            color: #0f5132;
+            font-weight: 900;
+        }
+
+        td {
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .estado {
+            font-weight: 900;
+            color: #198754;
+        }
+
+        .form {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 15px;
+        }
+
+        .form input, .form select {
+            width: 100%;
+            padding: 12px;
+            border-radius: 14px;
+            border: 1px solid #d1e7dd;
+            outline: none;
+            font-size: 14px;
+            background: #f8f9fa;
+        }
+
+        .form input:focus, .form select:focus {
+            border-color: #198754;
+            box-shadow: 0px 0px 0px 4px rgba(25,135,84,0.2);
+            background: white;
+        }
+
+        .form textarea {
+            grid-column: span 2;
+            width: 100%;
+            padding: 12px;
+            border-radius: 14px;
+            border: 1px solid #d1e7dd;
+            outline: none;
+            font-size: 14px;
+            background: #f8f9fa;
+            resize: none;
+            height: 80px;
+        }
+
+        .form button {
+            grid-column: span 2;
+            padding: 12px;
+            border: none;
+            border-radius: 14px;
+            background: #198754;
+            color: white;
+            font-size: 15px;
+            font-weight: 900;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .form button:hover {
+            background: #157347;
+        }
+
+        .msg {
+            margin-top: 15px;
+            padding: 12px;
+            border-radius: 14px;
+            background: #d1e7dd;
+            border: 1px solid #198754;
+            color: #0f5132;
+            font-weight: 800;
+        }
+
+        @media(max-width: 950px){
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            .form {
+                grid-template-columns: 1fr;
+            }
+            .form textarea, .form button {
+                grid-column: span 1;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="navbar">
+        <h1>CITASYA</h1>
+        <div class="user">
+            {{ usuario }} ({{ rol }})
+            <a class="logout" href="/logout">Cerrar sesión</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="title">Panel Principal</div>
+        <div class="subtitle">Bienvenido al sistema de gestión de citas médicas CITASYA.</div>
+
+        {% if rol == "Paciente" %}
+
+            <div class="grid">
+                <div class="card">
+                    <h3>📅 Agendar Cita</h3>
+                    <p>Solicita una nueva cita médica seleccionando fecha, hora y doctor.</p>
+                </div>
+
+                <div class="card">
+                    <h3>🕒 Citas Pendientes</h3>
+                    <p>Consulta tus citas programadas y pendientes por asistir.</p>
+                </div>
+
+                <div class="card">
+                    <h3>📜 Historial</h3>
+                    <p>Visualiza el historial de citas realizadas en la plataforma.</p>
+                </div>
+            </div>
+
+            <div class="big-card">
+                <h3 style="margin-top:0;color:#198754;font-weight:900;">Agendar Nueva Cita</h3>
+
+                <form method="POST" action="/agendar" class="form">
+                    <select name="doctor" required>
+                        <option value="">Seleccione Doctor</option>
+                        {% for d in doctores %}
+                            <option value="{{ d[0] }}">{{ d[0] }}</option>
+                        {% endfor %}
+                    </select>
+
+                    <input type="date" name="fecha" required>
+                    <input type="time" name="hora" required>
+
+                    <textarea name="motivo" placeholder="Motivo de la consulta" required></textarea>
+
+                    <button type="submit">Agendar Cita</button>
+                </form>
+
+                {% if mensaje %}
+                    <div class="msg">{{ mensaje }}</div>
+                {% endif %}
+            </div>
+
+            <div class="big-card">
+                <h3 style="margin-top:0;color:#198754;font-weight:900;">Citas Pendientes</h3>
+                <table>
+                    <tr>
+                        <th>Doctor</th>
+                        <th>Fecha</th>
+                        <th>Hora</th>
+                        <th>Motivo</th>
+                        <th>Estado</th>
+                    </tr>
+
+                    {% for c in pendientes %}
+                    <tr>
+                        <td>{{ c[0] }}</td>
+                        <td>{{ c[1] }}</td>
+                        <td>{{ c[2] }}</td>
+                        <td>{{ c[3] }}</td>
+                        <td class="estado">{{ c[4] }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+
+            <div class="big-card">
+                <h3 style="margin-top:0;color:#198754;font-weight:900;">Historial de Citas</h3>
+                <table>
+                    <tr>
+                        <th>Doctor</th>
+                        <th>Fecha</th>
+                        <th>Hora</th>
+                        <th>Motivo</th>
+                        <th>Estado</th>
+                    </tr>
+
+                    {% for c in historial %}
+                    <tr>
+                        <td>{{ c[0] }}</td>
+                        <td>{{ c[1] }}</td>
+                        <td>{{ c[2] }}</td>
+                        <td>{{ c[3] }}</td>
+                        <td class="estado">{{ c[4] }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+
+        {% elif rol == "Medico" %}
+
+            <div class="grid">
+                <div class="card">
+                    <h3>📌 Agenda de Hoy</h3>
+                    <p>Consulta las citas asignadas para el día actual y organiza tu jornada.</p>
+                </div>
+
+                <div class="card">
+                    <h3>🧾 Próximas Citas</h3>
+                    <p>Visualiza las citas futuras programadas con pacientes.</p>
+                </div>
+
+                <div class="card">
+                    <h3>🩺 Atención Médica</h3>
+                    <p>Gestiona tus consultas médicas de manera eficiente y rápida.</p>
+                </div>
+            </div>
+
+            <div class="big-card">
+                <h3 style="margin-top:0;color:#198754;font-weight:900;">Citas para Hoy</h3>
+
+                <table>
+                    <tr>
+                        <th>Paciente</th>
+                        <th>Fecha</th>
+                        <th>Hora</th>
+                        <th>Motivo</th>
+                        <th>Estado</th>
+                    </tr>
+
+                    {% for c in hoy %}
+                    <tr>
+                        <td>{{ c[0] }}</td>
+                        <td>{{ c[1] }}</td>
+                        <td>{{ c[2] }}</td>
+                        <td>{{ c[3] }}</td>
+                        <td class="estado">{{ c[4] }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+
+            <div class="big-card">
+                <h3 style="margin-top:0;color:#198754;font-weight:900;">Próximas Citas</h3>
+
+                <table>
+                    <tr>
+                        <th>Paciente</th>
+                        <th>Fecha</th>
+                        <th>Hora</th>
+                        <th>Motivo</th>
+                        <th>Estado</th>
+                    </tr>
+
+                    {% for c in proximas %}
+                    <tr>
+                        <td>{{ c[0] }}</td>
+                        <td>{{ c[1] }}</td>
+                        <td>{{ c[2] }}</td>
+                        <td>{{ c[3] }}</td>
+                        <td class="estado">{{ c[4] }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+
+        {% else %}
+
+            <div class="big-card">
+                <h3 style="margin-top:0;color:#198754;font-weight:900;">Panel Administrador</h3>
+                <p style="color:#6c757d;">Este panel se puede extender para gestión de usuarios, médicos e IPS.</p>
+            </div>
+
+        {% endif %}
+
+    </div>
+
+</body>
+</html>
+"""
+
+# ---------------------------------------------------
+# RUTAS
+# ---------------------------------------------------
+@app.route("/", methods=["GET", "POST"])
+def login():
+    error = None
+    success = request.args.get("success")
+
+    if request.method == "POST":
+        usuario = request.form.get("usuario")
+        password = request.form.get("password")
+
+        resultado = validar_login(usuario, password)
+
+        if resultado != None:
+            session["usuario"] = resultado[0]
+            session["rol"] = resultado[1]
+            return redirect(url_for("dashboard"))
+        else:
+            error = "Usuario o contraseña incorrectos. Intenta nuevamente."
+
+    return render_template_string(LOGIN_HTML, error=error, success=success)
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    error = None
+
+    if request.method == "POST":
+        usuario = request.form.get("usuario")
+        password = request.form.get("password")
+        rol = request.form.get("rol")
+
+        if usuario == "" or password == "" or rol == "":
+            error = "Todos los campos son obligatorios."
+        else:
+            registrado, mensaje = registrar_usuario(usuario, password, rol)
+
+            if registrado:
+                return redirect(url_for("login", success="Registro exitoso. Ahora puedes iniciar sesión."))
+            else:
+                error = mensaje
+
+    return render_template_string(REGISTER_HTML, error=error)
+
+
+@app.route("/dashboard")
+def dashboard():
+    if "usuario" not in session:
+        return redirect(url_for("login"))
+
+    usuario = session["usuario"]
+    rol = session["rol"]
+
+    doctores = obtener_doctores()
+    historial = obtener_citas_paciente(usuario)
+    pendientes = obtener_citas_pendientes_paciente(usuario)
+
+    hoy = obtener_citas_doctor_hoy(usuario)
+    proximas = obtener_proximas_citas_doctor(usuario)
+
+    mensaje = request.args.get("msg")
+
+    return render_template_string(
+        DASHBOARD_HTML,
+        usuario=usuario,
+        rol=rol,
+        doctores=doctores,
+        historial=historial,
+        pendientes=pendientes,
+        hoy=hoy,
+        proximas=proximas,
+        mensaje=mensaje
+    )
+
+
+@app.route("/agendar", methods=["POST"])
+def agendar():
+    if "usuario" not in session:
+        return redirect(url_for("login"))
+
+    if session["rol"] != "Paciente":
+        return redirect(url_for("dashboard"))
+
+    paciente = session["usuario"]
+    doctor = request.form.get("doctor")
+    fecha = request.form.get("fecha")
+    hora = request.form.get("hora")
+    motivo = request.form.get("motivo")
+
+    if doctor == "" or fecha == "" or hora == "" or motivo == "":
+        return redirect(url_for("dashboard", msg="Todos los campos son obligatorios."))
+
+    crear_cita(paciente, doctor, fecha, hora, motivo)
+    return redirect(url_for("dashboard", msg="Cita agendada exitosamente."))
+
+
+@app.route("/logout")
+def logout():
+    session.pop("usuario", None)
+    session.pop("rol", None)
+    return redirect(url_for("login"))
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
