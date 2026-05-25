@@ -1,6 +1,6 @@
 from flask import Flask, render_template_string, request, redirect, url_for, session
 import sqlite3
-from datetime import datetime, date
+from datetime import date
 
 app = Flask(__name__)
 app.secret_key = "citasya_secret_key_2026"
@@ -19,7 +19,9 @@ def crear_tablas():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             usuario TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
-            rol TEXT NOT NULL
+            rol TEXT NOT NULL,
+            npi TEXT,
+            admin_code TEXT
         )
     """)
 
@@ -41,17 +43,18 @@ def crear_tablas():
 crear_tablas()
 
 # ---------------------------------------------------
-# FUNCIONES BD
+# FUNCIONES BD USUARIOS
 # ---------------------------------------------------
-def registrar_usuario(usuario, password, rol):
+def registrar_usuario(usuario, password, rol, npi=None, admin_code=None):
     conexion = sqlite3.connect(DB_NAME)
     cursor = conexion.cursor()
 
     try:
-        cursor.execute(
-            "INSERT INTO usuarios (usuario, password, rol) VALUES (?, ?, ?)",
-            (usuario, password, rol)
-        )
+        cursor.execute("""
+            INSERT INTO usuarios (usuario, password, rol, npi, admin_code)
+            VALUES (?, ?, ?, ?, ?)
+        """, (usuario, password, rol, npi, admin_code))
+
         conexion.commit()
         conexion.close()
         return True, None
@@ -69,14 +72,14 @@ def validar_login(usuario, password):
     conexion = sqlite3.connect(DB_NAME)
     cursor = conexion.cursor()
 
-    cursor.execute(
-        "SELECT usuario, rol FROM usuarios WHERE usuario = ? AND password = ?",
-        (usuario, password)
-    )
+    cursor.execute("""
+        SELECT usuario, rol, npi, admin_code 
+        FROM usuarios 
+        WHERE usuario = ? AND password = ?
+    """, (usuario, password))
 
     resultado = cursor.fetchone()
     conexion.close()
-
     return resultado
 
 
@@ -91,6 +94,28 @@ def obtener_doctores():
     return doctores
 
 
+def obtener_usuarios():
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("SELECT id, usuario, rol, npi, admin_code FROM usuarios ORDER BY id ASC")
+    usuarios = cursor.fetchall()
+
+    conexion.close()
+    return usuarios
+
+
+def eliminar_usuario(id_usuario):
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("DELETE FROM usuarios WHERE id = ?", (id_usuario,))
+    conexion.commit()
+    conexion.close()
+
+# ---------------------------------------------------
+# FUNCIONES BD CITAS
+# ---------------------------------------------------
 def crear_cita(paciente, doctor, fecha, hora, motivo):
     conexion = sqlite3.connect(DB_NAME)
     cursor = conexion.cursor()
@@ -172,8 +197,57 @@ def obtener_proximas_citas_doctor(doctor):
     return citas
 
 
+def obtener_todas_citas():
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("""
+        SELECT id, paciente, doctor, fecha, hora, motivo, estado
+        FROM citas
+        ORDER BY fecha DESC, hora DESC
+    """)
+
+    citas = cursor.fetchall()
+    conexion.close()
+    return citas
+
+
+def eliminar_cita(id_cita):
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("DELETE FROM citas WHERE id = ?", (id_cita,))
+    conexion.commit()
+    conexion.close()
+
 # ---------------------------------------------------
-# FRONT LOGIN (VERDE/BLANCO)
+# RESUMEN ADMIN
+# ---------------------------------------------------
+def obtener_resumen_admin():
+    conexion = sqlite3.connect(DB_NAME)
+    cursor = conexion.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM usuarios")
+    total_usuarios = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM usuarios WHERE rol = 'Paciente'")
+    total_pacientes = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM usuarios WHERE rol = 'Medico'")
+    total_medicos = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM citas")
+    total_citas = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM citas WHERE estado = 'Pendiente'")
+    citas_pendientes = cursor.fetchone()[0]
+
+    conexion.close()
+
+    return total_usuarios, total_pacientes, total_medicos, total_citas, citas_pendientes
+
+# ---------------------------------------------------
+# LOGIN HTML (NUEVO ESTILO PROFESIONAL)
 # ---------------------------------------------------
 LOGIN_HTML = """
 <!DOCTYPE html>
@@ -181,7 +255,7 @@ LOGIN_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - CITASYA</title>
+    <title>Ingreso - CITASYA</title>
 
     <style>
         * { box-sizing: border-box; }
@@ -189,222 +263,241 @@ LOGIN_HTML = """
         body {
             margin: 0;
             font-family: "Segoe UI", Arial, sans-serif;
-            height: 100vh;
-            background: linear-gradient(135deg, #0f5132, #198754, #d1e7dd);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
+            background: #f4f8f6;
         }
 
-        .container {
-            width: 950px;
-            max-width: 100%;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            border-radius: 22px;
-            overflow: hidden;
-            box-shadow: 0px 25px 70px rgba(0,0,0,0.4);
-        }
-
-        .left {
-            padding: 55px;
+        .topbar {
+            background: #0f5132;
             color: white;
-            background: rgba(0,0,0,0.15);
-            backdrop-filter: blur(12px);
+            padding: 18px 50px;
             display: flex;
-            flex-direction: column;
-            justify-content: center;
+            justify-content: space-between;
+            align-items: center;
         }
 
-        .left h1 {
+        .topbar h1 {
             margin: 0;
-            font-size: 45px;
+            font-size: 20px;
             font-weight: 900;
             letter-spacing: 1px;
         }
 
+        .topbar span {
+            font-size: 13px;
+            opacity: 0.9;
+        }
+
+        .main {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 60px 20px;
+        }
+
+        .card {
+            width: 1000px;
+            max-width: 100%;
+            background: white;
+            border-radius: 18px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            overflow: hidden;
+            border: 1px solid #d1e7dd;
+            box-shadow: 0px 18px 45px rgba(0,0,0,0.12);
+        }
+
+        .left {
+            padding: 50px;
+            background: linear-gradient(135deg, #0f5132, #198754);
+            color: white;
+        }
+
+        .left h2 {
+            margin-top: 0;
+            font-size: 34px;
+            font-weight: 900;
+        }
+
         .left p {
-            margin-top: 16px;
-            font-size: 15px;
+            font-size: 14px;
             line-height: 1.7;
             opacity: 0.95;
         }
 
-        .left .tag {
-            margin-top: 22px;
-            padding: 12px 16px;
+        .left .info {
+            margin-top: 25px;
+            background: rgba(255,255,255,0.12);
+            padding: 18px;
             border-radius: 14px;
-            background: rgba(255,255,255,0.18);
             font-size: 13px;
-            font-weight: 600;
+            line-height: 1.6;
         }
 
         .right {
-            background: white;
             padding: 55px 45px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
         }
 
-        .right h2 {
-            margin: 0;
-            font-size: 30px;
-            color: #0f5132;
+        .right h3 {
+            margin-top: 0;
+            font-size: 22px;
             font-weight: 900;
+            color: #0f5132;
         }
 
         .right p {
             margin-top: 10px;
             margin-bottom: 30px;
             color: #6c757d;
-            font-size: 14px;
+            font-size: 13px;
         }
 
         label {
             display: block;
-            font-size: 13px;
             margin-bottom: 7px;
+            font-size: 13px;
+            font-weight: 800;
             color: #0f5132;
-            font-weight: 700;
         }
 
         input {
             width: 100%;
-            padding: 13px 14px;
+            padding: 12px 14px;
             border-radius: 14px;
             border: 1px solid #d1e7dd;
-            outline: none;
-            font-size: 14px;
             background: #f8f9fa;
-            transition: 0.2s;
+            outline: none;
+            font-size: 13px;
             margin-bottom: 18px;
         }
 
         input:focus {
             border-color: #198754;
-            box-shadow: 0px 0px 0px 4px rgba(25,135,84,0.2);
+            box-shadow: 0px 0px 0px 4px rgba(25,135,84,0.18);
             background: white;
         }
 
         button {
             width: 100%;
-            padding: 13px;
-            border: none;
+            padding: 12px;
             border-radius: 14px;
+            border: none;
             background: #198754;
             color: white;
-            font-size: 15px;
-            font-weight: 800;
+            font-size: 14px;
+            font-weight: 900;
             cursor: pointer;
-            transition: 0.3s;
+            transition: 0.2s;
         }
 
         button:hover {
-            transform: translateY(-2px);
             background: #157347;
-            box-shadow: 0px 15px 30px rgba(25,135,84,0.35);
         }
 
         .link {
             margin-top: 18px;
+            font-size: 13px;
             text-align: center;
-            font-size: 14px;
         }
 
         .link a {
-            color: #198754;
             text-decoration: none;
-            font-weight: 800;
+            font-weight: 900;
+            color: #198754;
         }
 
         .error {
-            margin-top: 18px;
+            margin-top: 20px;
             padding: 12px;
             border-radius: 14px;
             background: #f8d7da;
             border: 1px solid #dc3545;
             color: #842029;
-            font-weight: 700;
-            font-size: 14px;
+            font-weight: 800;
+            font-size: 13px;
         }
 
         .success {
-            margin-top: 18px;
+            margin-top: 20px;
             padding: 12px;
             border-radius: 14px;
             background: #d1e7dd;
             border: 1px solid #198754;
             color: #0f5132;
-            font-weight: 700;
-            font-size: 14px;
+            font-weight: 800;
+            font-size: 13px;
         }
 
         .footer {
-            margin-top: 30px;
             text-align: center;
+            padding: 20px;
             font-size: 12px;
-            color: #adb5bd;
+            color: #6c757d;
         }
 
-        @media(max-width: 850px){
-            .container {
-                grid-template-columns: 1fr;
-            }
-            .left {
-                text-align: center;
-            }
+        @media(max-width: 900px){
+            .card { grid-template-columns: 1fr; }
+            .left { text-align: center; }
         }
     </style>
 </head>
 
 <body>
 
-<div class="container">
+<div class="topbar">
+    <h1>CITASYA</h1>
+    <span>Plataforma de Gestión de Citas Médicas</span>
+</div>
 
-    <div class="left">
-        <h1>CITASYA</h1>
-        <p>
-            Plataforma digital diseñada para la gestión de citas médicas.
-            Optimiza agendas, reduce tiempos de espera y mejora la atención.
-        </p>
-        <div class="tag">
-            ✔ Seguridad | ✔ Historial Clínico | ✔ Agenda Médica
+<div class="main">
+    <div class="card">
+
+        <div class="left">
+            <h2>Bienvenido a CITASYA</h2>
+            <p>
+                Sistema institucional de agendamiento para EPS e IPS. 
+                Administra pacientes, médicos y citas de manera organizada y segura.
+            </p>
+
+            <div class="info">
+                <b>Servicios principales:</b><br>
+                - Gestión de citas médicas<br>
+                - Panel por roles (Paciente, Médico, Administrador)<br>
+                - Registro de agenda y control institucional
+            </div>
         </div>
+
+        <div class="right">
+            <h3>Ingreso al sistema</h3>
+            <p>Ingrese sus credenciales para continuar.</p>
+
+            <form method="POST">
+                <label>Usuario</label>
+                <input type="text" name="usuario" required>
+
+                <label>Contraseña</label>
+                <input type="password" name="password" required>
+
+                <button type="submit">Ingresar</button>
+            </form>
+
+            <div class="link">
+                ¿No tiene cuenta? <a href="/register">Crear cuenta</a>
+            </div>
+
+            {% if error %}
+                <div class="error">{{ error }}</div>
+            {% endif %}
+
+            {% if success %}
+                <div class="success">{{ success }}</div>
+            {% endif %}
+        </div>
+
     </div>
+</div>
 
-    <div class="right">
-        <h2>Iniciar Sesión</h2>
-        <p>Ingresa para acceder a tus funciones según tu rol.</p>
-
-        <form method="POST">
-            <label>Usuario</label>
-            <input type="text" name="usuario" placeholder="Ej: paciente01" required>
-
-            <label>Contraseña</label>
-            <input type="password" name="password" placeholder="••••••••" required>
-
-            <button type="submit">Ingresar</button>
-        </form>
-
-        <div class="link">
-            ¿No tienes cuenta? <a href="/register">Registrarse</a>
-        </div>
-
-        {% if error %}
-        <div class="error">{{ error }}</div>
-        {% endif %}
-
-        {% if success %}
-        <div class="success">{{ success }}</div>
-        {% endif %}
-
-        <div class="footer">
-            CITASYA © 2026 - Sistema de Citas Médicas
-        </div>
-    </div>
-
+<div class="footer">
+    CITASYA © 2026 - Sistema de Gestión EPS / IPS
 </div>
 
 </body>
@@ -412,7 +505,7 @@ LOGIN_HTML = """
 """
 
 # ---------------------------------------------------
-# FRONT REGISTRO
+# REGISTER HTML (NPI Y ADMIN CODE)
 # ---------------------------------------------------
 REGISTER_HTML = """
 <!DOCTYPE html>
@@ -428,156 +521,223 @@ REGISTER_HTML = """
         body {
             margin: 0;
             font-family: "Segoe UI", Arial, sans-serif;
-            height: 100vh;
-            background: linear-gradient(135deg, #0f5132, #198754, #d1e7dd);
+            background: #f4f8f6;
+        }
+
+        .topbar {
+            background: #0f5132;
+            color: white;
+            padding: 18px 50px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .topbar h1 {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 900;
+        }
+
+        .main {
             display: flex;
             justify-content: center;
-            align-items: center;
-            padding: 20px;
+            padding: 60px 20px;
         }
 
-        .box {
-            width: 520px;
+        .card {
+            width: 850px;
             max-width: 100%;
             background: white;
-            border-radius: 22px;
-            padding: 55px 45px;
-            box-shadow: 0px 25px 70px rgba(0,0,0,0.4);
+            border-radius: 18px;
+            border: 1px solid #d1e7dd;
+            box-shadow: 0px 18px 45px rgba(0,0,0,0.12);
+            padding: 50px;
         }
 
-        h1 {
-            margin: 0;
-            font-size: 32px;
-            font-weight: 900;
+        h2 {
+            margin-top: 0;
             color: #0f5132;
-            text-align: center;
+            font-size: 24px;
+            font-weight: 900;
         }
 
         p {
-            margin-top: 12px;
-            margin-bottom: 30px;
-            text-align: center;
+            margin-top: 8px;
+            margin-bottom: 25px;
             color: #6c757d;
-            font-size: 14px;
+            font-size: 13px;
         }
 
         label {
             display: block;
-            font-size: 13px;
             margin-bottom: 7px;
+            font-size: 13px;
+            font-weight: 800;
             color: #0f5132;
-            font-weight: 700;
         }
 
         input, select {
             width: 100%;
-            padding: 13px 14px;
+            padding: 12px 14px;
             border-radius: 14px;
             border: 1px solid #d1e7dd;
-            outline: none;
-            font-size: 14px;
             background: #f8f9fa;
-            transition: 0.2s;
+            outline: none;
+            font-size: 13px;
             margin-bottom: 18px;
         }
 
         input:focus, select:focus {
             border-color: #198754;
-            box-shadow: 0px 0px 0px 4px rgba(25,135,84,0.2);
+            box-shadow: 0px 0px 0px 4px rgba(25,135,84,0.18);
             background: white;
         }
 
         button {
             width: 100%;
-            padding: 13px;
-            border: none;
+            padding: 12px;
             border-radius: 14px;
+            border: none;
             background: #198754;
             color: white;
-            font-size: 15px;
-            font-weight: 800;
+            font-size: 14px;
+            font-weight: 900;
             cursor: pointer;
-            transition: 0.3s;
         }
 
         button:hover {
-            transform: translateY(-2px);
             background: #157347;
-            box-shadow: 0px 15px 30px rgba(25,135,84,0.35);
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+
+        .extra {
+            display: none;
         }
 
         .link {
             margin-top: 18px;
             text-align: center;
-            font-size: 14px;
+            font-size: 13px;
         }
 
         .link a {
-            color: #198754;
             text-decoration: none;
-            font-weight: 800;
+            font-weight: 900;
+            color: #198754;
         }
 
         .error {
-            margin-top: 18px;
+            margin-top: 20px;
             padding: 12px;
             border-radius: 14px;
             background: #f8d7da;
             border: 1px solid #dc3545;
             color: #842029;
-            font-weight: 700;
-            font-size: 14px;
+            font-weight: 800;
+            font-size: 13px;
+        }
+
+        @media(max-width: 850px){
+            .row { grid-template-columns: 1fr; }
         }
     </style>
+
+    <script>
+        function mostrarCamposExtra() {
+            let rol = document.getElementById("rol").value;
+            let campoNPI = document.getElementById("campoNPI");
+            let campoAdmin = document.getElementById("campoAdmin");
+
+            campoNPI.style.display = "none";
+            campoAdmin.style.display = "none";
+
+            if (rol === "Medico") {
+                campoNPI.style.display = "block";
+            }
+
+            if (rol === "Administrador") {
+                campoAdmin.style.display = "block";
+            }
+        }
+    </script>
 </head>
 
 <body>
 
-<div class="box">
-    <h1>Registro CITASYA</h1>
-    <p>Crea tu cuenta y accede a los servicios médicos digitales.</p>
+<div class="topbar">
+    <h1>CITASYA</h1>
+    <span>Registro institucional</span>
+</div>
 
-    <form method="POST">
-        <label>Usuario</label>
-        <input type="text" name="usuario" placeholder="Ej: paciente01" required>
+<div class="main">
+    <div class="card">
 
-        <label>Contraseña</label>
-        <input type="password" name="password" placeholder="Mínimo 6 caracteres" required>
+        <h2>Registro de usuario</h2>
+        <p>Complete los datos para crear una cuenta en la plataforma.</p>
 
-        <label>Rol</label>
-        <select name="rol" required>
-            <option value="">Seleccione un rol</option>
-            <option value="Paciente">Paciente</option>
-            <option value="Medico">Médico</option>
-            <option value="Administrador">Administrador</option>
-        </select>
+        <form method="POST">
 
-        <button type="submit">Registrarse</button>
-    </form>
+            <div class="row">
+                <div>
+                    <label>Usuario</label>
+                    <input type="text" name="usuario" required>
+                </div>
 
-    <div class="link">
-        ¿Ya tienes cuenta? <a href="/">Volver al Login</a>
+                <div>
+                    <label>Contraseña</label>
+                    <input type="password" name="password" required>
+                </div>
+            </div>
+
+            <label>Rol</label>
+            <select name="rol" id="rol" onchange="mostrarCamposExtra()" required>
+                <option value="">Seleccione rol</option>
+                <option value="Paciente">Paciente</option>
+                <option value="Medico">Médico</option>
+                <option value="Administrador">Administrador</option>
+            </select>
+
+            <div id="campoNPI" class="extra">
+                <label>NPI (Número de Identificación Profesional)</label>
+                <input type="text" name="npi" placeholder="Ej: 1234567890">
+            </div>
+
+            <div id="campoAdmin" class="extra">
+                <label>Código Administrativo</label>
+                <input type="text" name="admin_code" placeholder="Ej: ADM-2026-001">
+            </div>
+
+            <button type="submit">Registrar usuario</button>
+        </form>
+
+        <div class="link">
+            ¿Ya tiene cuenta? <a href="/">Volver al Login</a>
+        </div>
+
+        {% if error %}
+            <div class="error">{{ error }}</div>
+        {% endif %}
+
     </div>
-
-    {% if error %}
-    <div class="error">{{ error }}</div>
-    {% endif %}
 </div>
 
 </body>
 </html>
 """
 
-# ---------------------------------------------------
-# DASHBOARD HTML (CAMBIA SEGÚN ROL)
-# ---------------------------------------------------
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - CITASYA</title>
+    <title>CITASYA - Portal EPS/IPS</title>
 
     <style>
         * { box-sizing: border-box; }
@@ -585,393 +745,636 @@ DASHBOARD_HTML = """
         body {
             margin: 0;
             font-family: "Segoe UI", Arial, sans-serif;
-            background: #f3fdf7;
+            background: #f5f7fa;
+            color: #222;
         }
 
-        .navbar {
-            background: #198754;
-            color: white;
-            padding: 18px 30px;
+        /* TOP HEADER */
+        .top-header {
+            background: white;
+            padding: 18px 70px;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            border-bottom: 1px solid #e5e7eb;
         }
 
-        .navbar h1 {
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-circle {
+            width: 38px;
+            height: 38px;
+            background: #0f5132;
+            border-radius: 50%;
+        }
+
+        .logo h1 {
             margin: 0;
-            font-size: 20px;
-            font-weight: 900;
-            letter-spacing: 1px;
-        }
-
-        .navbar .user {
-            font-size: 14px;
-            font-weight: 700;
-        }
-
-        .logout {
-            margin-left: 15px;
-            padding: 10px 15px;
-            border-radius: 12px;
-            background: white;
-            color: #198754;
-            text-decoration: none;
-            font-weight: 900;
-            font-size: 13px;
-            transition: 0.2s;
-        }
-
-        .logout:hover {
-            background: #d1e7dd;
-        }
-
-        .container {
-            padding: 35px;
-            max-width: 1100px;
-            margin: auto;
-        }
-
-        .title {
-            font-size: 28px;
+            font-size: 26px;
             font-weight: 900;
             color: #0f5132;
-            margin-bottom: 10px;
         }
 
-        .subtitle {
-            color: #6c757d;
-            margin-bottom: 30px;
+        .top-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .top-actions a {
+            background: #0f5132;
+            color: white;
+            padding: 10px 14px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 800;
+        }
+
+        /* NAVBAR */
+        .navbar {
+            background: #198754;
+            padding: 0px 70px;
+        }
+
+        .navbar ul {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            gap: 25px;
+        }
+
+        .navbar li {
+            padding: 14px 0;
+        }
+
+        .navbar a {
+            text-decoration: none;
+            color: white;
+            font-weight: 800;
             font-size: 14px;
         }
 
-        .grid {
+        .navbar a:hover {
+            text-decoration: underline;
+        }
+
+        /* HERO */
+        .hero {
+            background: linear-gradient(120deg, #0f5132, #198754);
+            padding: 60px 70px;
+            color: white;
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 18px;
+            grid-template-columns: 1.2fr 1fr;
+            gap: 25px;
+            align-items: center;
+        }
+
+        .hero h2 {
+            margin: 0;
+            font-size: 42px;
+            font-weight: 900;
+        }
+
+        .hero p {
+            font-size: 15px;
+            margin-top: 15px;
+            line-height: 1.7;
+            opacity: 0.95;
+        }
+
+        .hero-btn {
+            margin-top: 20px;
+            display: inline-block;
+            background: white;
+            color: #0f5132;
+            padding: 12px 18px;
+            border-radius: 8px;
+            font-weight: 900;
+            font-size: 13px;
+            text-decoration: none;
+        }
+
+        .hero-card {
+            background: rgba(255,255,255,0.12);
+            border: 1px solid rgba(255,255,255,0.25);
+            padding: 25px;
+            border-radius: 14px;
+        }
+
+        .hero-card h3 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 900;
+        }
+
+        .hero-card p {
+            font-size: 13px;
+            opacity: 0.95;
+            margin-top: 10px;
+            line-height: 1.6;
+        }
+
+        /* MAIN */
+        .container {
+            padding: 50px 70px;
+        }
+
+        .section-title {
+            text-align: center;
+            font-size: 22px;
+            font-weight: 900;
+            color: #0f5132;
             margin-bottom: 30px;
         }
 
-        .card {
-            background: white;
-            padding: 22px;
-            border-radius: 18px;
-            box-shadow: 0px 8px 20px rgba(0,0,0,0.08);
-            border: 1px solid #d1e7dd;
+        /* SERVICES GRID */
+        .services {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 18px;
         }
 
-        .card h3 {
-            margin-top: 0;
-            margin-bottom: 10px;
+        .service-card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 25px;
+            text-align: center;
+            box-shadow: 0px 6px 18px rgba(0,0,0,0.05);
+        }
+
+        .service-icon {
+            width: 55px;
+            height: 55px;
+            border-radius: 50%;
+            background: #d1e7dd;
+            margin: auto;
+            margin-bottom: 15px;
+        }
+
+        .service-card h4 {
+            margin: 0;
             font-size: 16px;
             font-weight: 900;
-            color: #198754;
+            color: #0f5132;
         }
 
-        .card p {
-            margin: 0;
+        .service-card p {
+            font-size: 13px;
             color: #6c757d;
-            font-size: 14px;
-            line-height: 1.5;
+            margin-top: 10px;
+            line-height: 1.6;
         }
 
-        .big-card {
+        .service-card a {
+            display: inline-block;
+            margin-top: 15px;
+            background: #198754;
+            color: white;
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-weight: 900;
+            text-decoration: none;
+            font-size: 13px;
+        }
+
+        /* TABLE SECTION */
+        .panel-section {
+            margin-top: 45px;
             background: white;
+            border-radius: 14px;
             padding: 25px;
-            border-radius: 18px;
-            box-shadow: 0px 8px 20px rgba(0,0,0,0.08);
-            border: 1px solid #d1e7dd;
-            margin-top: 20px;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0px 6px 18px rgba(0,0,0,0.05);
+        }
+
+        .panel-section h3 {
+            margin: 0;
+            color: #0f5132;
+            font-weight: 900;
+            font-size: 16px;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 12px;
+            margin-top: 18px;
         }
 
         th, td {
             padding: 12px;
+            font-size: 13px;
             text-align: left;
-            font-size: 14px;
+            border-bottom: 1px solid #e5e7eb;
         }
 
         th {
             background: #d1e7dd;
+            font-weight: 900;
             color: #0f5132;
-            font-weight: 900;
         }
 
-        td {
-            border-bottom: 1px solid #e9ecef;
-        }
-
-        .estado {
-            font-weight: 900;
-            color: #198754;
-        }
-
-        .form {
+        /* FORM */
+        .form-grid {
+            margin-top: 18px;
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 12px;
-            margin-top: 15px;
         }
 
-        .form input, .form select {
-            width: 100%;
+        .form-grid input, .form-grid select, .form-grid textarea {
             padding: 12px;
-            border-radius: 14px;
+            border-radius: 10px;
             border: 1px solid #d1e7dd;
             outline: none;
-            font-size: 14px;
+            font-size: 13px;
             background: #f8f9fa;
         }
 
-        .form input:focus, .form select:focus {
-            border-color: #198754;
-            box-shadow: 0px 0px 0px 4px rgba(25,135,84,0.2);
-            background: white;
-        }
-
-        .form textarea {
+        .form-grid textarea {
             grid-column: span 2;
-            width: 100%;
-            padding: 12px;
-            border-radius: 14px;
-            border: 1px solid #d1e7dd;
-            outline: none;
-            font-size: 14px;
-            background: #f8f9fa;
+            height: 90px;
             resize: none;
-            height: 80px;
         }
 
-        .form button {
+        .form-grid button {
             grid-column: span 2;
             padding: 12px;
+            border-radius: 10px;
             border: none;
-            border-radius: 14px;
             background: #198754;
             color: white;
-            font-size: 15px;
             font-weight: 900;
             cursor: pointer;
-            transition: 0.2s;
         }
 
-        .form button:hover {
+        .form-grid button:hover {
             background: #157347;
         }
 
-        .msg {
-            margin-top: 15px;
-            padding: 12px;
-            border-radius: 14px;
-            background: #d1e7dd;
-            border: 1px solid #198754;
-            color: #0f5132;
-            font-weight: 800;
+        /* FOOTER */
+        .footer {
+            background: #0f5132;
+            color: white;
+            padding: 45px 70px;
+            margin-top: 60px;
         }
 
-        @media(max-width: 950px){
-            .grid {
-                grid-template-columns: 1fr;
+        .footer-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 25px;
+        }
+
+        .footer h4 {
+            margin-top: 0;
+            font-size: 15px;
+            font-weight: 900;
+        }
+
+        .footer p {
+            margin: 8px 0;
+            font-size: 13px;
+            opacity: 0.9;
+        }
+
+        .footer small {
+            display: block;
+            margin-top: 25px;
+            opacity: 0.8;
+            font-size: 12px;
+            text-align: center;
+        }
+
+        /* RESPONSIVE */
+        @media(max-width: 1100px){
+            .services {
+                grid-template-columns: 1fr 1fr;
             }
-            .form {
+            .hero {
                 grid-template-columns: 1fr;
-            }
-            .form textarea, .form button {
-                grid-column: span 1;
             }
         }
+
+        @media(max-width: 750px){
+            .top-header, .navbar, .hero, .container, .footer {
+                padding-left: 20px;
+                padding-right: 20px;
+            }
+            .services {
+                grid-template-columns: 1fr;
+            }
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+            .form-grid textarea, .form-grid button {
+                grid-column: span 1;
+            }
+            .footer-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
     </style>
 </head>
 
 <body>
 
-    <div class="navbar">
+<!-- HEADER -->
+<div class="top-header">
+    <div class="logo">
+        <div class="logo-circle"></div>
         <h1>CITASYA</h1>
-        <div class="user">
-            {{ usuario }} ({{ rol }})
-            <a class="logout" href="/logout">Cerrar sesión</a>
-        </div>
     </div>
 
-    <div class="container">
-        <div class="title">Panel Principal</div>
-        <div class="subtitle">Bienvenido al sistema de gestión de citas médicas CITASYA.</div>
+    <div class="top-actions">
+        <a href="/dashboard">Oficina Virtual</a>
+        <a href="/logout">Cerrar Sesión</a>
+    </div>
+</div>
+
+<!-- NAVBAR -->
+<div class="navbar">
+    <ul>
+        <li><a href="/dashboard">Inicio</a></li>
+        <li><a href="/dashboard">Nosotros</a></li>
+        <li><a href="/dashboard">Afiliados</a></li>
+        <li><a href="/dashboard">Empleadores</a></li>
+        <li><a href="/dashboard">Red de Atención</a></li>
+        <li><a href="/dashboard">Contáctanos</a></li>
+    </ul>
+</div>
+
+<!-- HERO -->
+<div class="hero">
+    <div>
+        <h2>Portal Institucional CITASYA</h2>
+        <p>
+            Bienvenido al sistema de gestión de citas médicas. Desde este portal podrás realizar solicitudes,
+            consultar tu historial, revisar citas pendientes y administrar servicios dependiendo de tu rol.
+        </p>
+
+        <a class="hero-btn" href="/dashboard">Ver servicios disponibles</a>
+    </div>
+
+    <div class="hero-card">
+        <h3>Sesión iniciada</h3>
+        <p><b>Usuario:</b> {{ usuario }}</p>
+        <p><b>Rol:</b> {{ rol }}</p>
+    </div>
+</div>
+
+<!-- MAIN CONTENT -->
+<div class="container">
+
+    <div class="section-title">Servicios destacados</div>
+
+    <div class="services">
+
+        <div class="service-card">
+            <div class="service-icon"></div>
+            <h4>Citas Médicas</h4>
+            <p>Agendamiento, consulta y seguimiento de citas médicas desde la oficina virtual.</p>
+            <a href="#panel">Ingresar</a>
+        </div>
+
+        <div class="service-card">
+            <div class="service-icon"></div>
+            <h4>Resultados Médicos</h4>
+            <p>Consulta de registros históricos y control de información médica almacenada.</p>
+            <a href="#panel">Ingresar</a>
+        </div>
+
+        <div class="service-card">
+            <div class="service-icon"></div>
+            <h4>Autorizaciones</h4>
+            <p>Gestión de autorizaciones médicas y soporte de trámites institucionales.</p>
+            <a href="#panel">Ingresar</a>
+        </div>
+
+        <div class="service-card">
+            <div class="service-icon"></div>
+            <h4>Atención al usuario</h4>
+            <p>Información de contacto y soporte para afiliados, médicos y administradores.</p>
+            <a href="#contactos">Ver</a>
+        </div>
+
+    </div>
+
+    <!-- PANEL POR ROLES -->
+    <div class="panel-section" id="panel">
 
         {% if rol == "Paciente" %}
 
-            <div class="grid">
-                <div class="card">
-                    <h3>📅 Agendar Cita</h3>
-                    <p>Solicita una nueva cita médica seleccionando fecha, hora y doctor.</p>
-                </div>
+            <h3>Gestión de citas del paciente</h3>
 
-                <div class="card">
-                    <h3>🕒 Citas Pendientes</h3>
-                    <p>Consulta tus citas programadas y pendientes por asistir.</p>
-                </div>
-
-                <div class="card">
-                    <h3>📜 Historial</h3>
-                    <p>Visualiza el historial de citas realizadas en la plataforma.</p>
-                </div>
-            </div>
-
-            <div class="big-card">
-                <h3 style="margin-top:0;color:#198754;font-weight:900;">Agendar Nueva Cita</h3>
-
-                <form method="POST" action="/agendar" class="form">
-                    <select name="doctor" required>
-                        <option value="">Seleccione Doctor</option>
-                        {% for d in doctores %}
-                            <option value="{{ d[0] }}">{{ d[0] }}</option>
-                        {% endfor %}
-                    </select>
-
-                    <input type="date" name="fecha" required>
-                    <input type="time" name="hora" required>
-
-                    <textarea name="motivo" placeholder="Motivo de la consulta" required></textarea>
-
-                    <button type="submit">Agendar Cita</button>
-                </form>
-
-                {% if mensaje %}
-                    <div class="msg">{{ mensaje }}</div>
-                {% endif %}
-            </div>
-
-            <div class="big-card">
-                <h3 style="margin-top:0;color:#198754;font-weight:900;">Citas Pendientes</h3>
-                <table>
-                    <tr>
-                        <th>Doctor</th>
-                        <th>Fecha</th>
-                        <th>Hora</th>
-                        <th>Motivo</th>
-                        <th>Estado</th>
-                    </tr>
-
-                    {% for c in pendientes %}
-                    <tr>
-                        <td>{{ c[0] }}</td>
-                        <td>{{ c[1] }}</td>
-                        <td>{{ c[2] }}</td>
-                        <td>{{ c[3] }}</td>
-                        <td class="estado">{{ c[4] }}</td>
-                    </tr>
+            <form method="POST" action="/agendar" class="form-grid">
+                <select name="doctor" required>
+                    <option value="">Seleccione Doctor</option>
+                    {% for d in doctores %}
+                        <option value="{{ d[0] }}">{{ d[0] }}</option>
                     {% endfor %}
-                </table>
-            </div>
+                </select>
 
-            <div class="big-card">
-                <h3 style="margin-top:0;color:#198754;font-weight:900;">Historial de Citas</h3>
-                <table>
-                    <tr>
-                        <th>Doctor</th>
-                        <th>Fecha</th>
-                        <th>Hora</th>
-                        <th>Motivo</th>
-                        <th>Estado</th>
-                    </tr>
+                <input type="date" name="fecha" required>
+                <input type="time" name="hora" required>
 
-                    {% for c in historial %}
-                    <tr>
-                        <td>{{ c[0] }}</td>
-                        <td>{{ c[1] }}</td>
-                        <td>{{ c[2] }}</td>
-                        <td>{{ c[3] }}</td>
-                        <td class="estado">{{ c[4] }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
+                <textarea name="motivo" placeholder="Motivo de la consulta médica" required></textarea>
+
+                <button type="submit">Agendar cita médica</button>
+            </form>
+
+            {% if mensaje %}
+                <p style="margin-top:15px; font-weight:900; color:#0f5132;">{{ mensaje }}</p>
+            {% endif %}
+
+            <h3 style="margin-top:35px;">Citas pendientes</h3>
+            <table>
+                <tr>
+                    <th>Doctor</th>
+                    <th>Fecha</th>
+                    <th>Hora</th>
+                    <th>Motivo</th>
+                    <th>Estado</th>
+                </tr>
+
+                {% for c in pendientes %}
+                <tr>
+                    <td>{{ c[0] }}</td>
+                    <td>{{ c[1] }}</td>
+                    <td>{{ c[2] }}</td>
+                    <td>{{ c[3] }}</td>
+                    <td>{{ c[4] }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+
+            <h3 style="margin-top:35px;">Historial de citas</h3>
+            <table>
+                <tr>
+                    <th>Doctor</th>
+                    <th>Fecha</th>
+                    <th>Hora</th>
+                    <th>Motivo</th>
+                    <th>Estado</th>
+                </tr>
+
+                {% for c in historial %}
+                <tr>
+                    <td>{{ c[0] }}</td>
+                    <td>{{ c[1] }}</td>
+                    <td>{{ c[2] }}</td>
+                    <td>{{ c[3] }}</td>
+                    <td>{{ c[4] }}</td>
+                </tr>
+                {% endfor %}
+            </table>
 
         {% elif rol == "Medico" %}
 
-            <div class="grid">
-                <div class="card">
-                    <h3>📌 Agenda de Hoy</h3>
-                    <p>Consulta las citas asignadas para el día actual y organiza tu jornada.</p>
-                </div>
+            <h3>Agenda médica del profesional</h3>
 
-                <div class="card">
-                    <h3>🧾 Próximas Citas</h3>
-                    <p>Visualiza las citas futuras programadas con pacientes.</p>
-                </div>
+            <h3 style="margin-top:25px;">Citas programadas para hoy</h3>
+            <table>
+                <tr>
+                    <th>Paciente</th>
+                    <th>Fecha</th>
+                    <th>Hora</th>
+                    <th>Motivo</th>
+                    <th>Estado</th>
+                </tr>
 
-                <div class="card">
-                    <h3>🩺 Atención Médica</h3>
-                    <p>Gestiona tus consultas médicas de manera eficiente y rápida.</p>
-                </div>
-            </div>
+                {% for c in hoy %}
+                <tr>
+                    <td>{{ c[0] }}</td>
+                    <td>{{ c[1] }}</td>
+                    <td>{{ c[2] }}</td>
+                    <td>{{ c[3] }}</td>
+                    <td>{{ c[4] }}</td>
+                </tr>
+                {% endfor %}
+            </table>
 
-            <div class="big-card">
-                <h3 style="margin-top:0;color:#198754;font-weight:900;">Citas para Hoy</h3>
+            <h3 style="margin-top:35px;">Próximas citas</h3>
+            <table>
+                <tr>
+                    <th>Paciente</th>
+                    <th>Fecha</th>
+                    <th>Hora</th>
+                    <th>Motivo</th>
+                    <th>Estado</th>
+                </tr>
 
-                <table>
-                    <tr>
-                        <th>Paciente</th>
-                        <th>Fecha</th>
-                        <th>Hora</th>
-                        <th>Motivo</th>
-                        <th>Estado</th>
-                    </tr>
+                {% for c in proximas %}
+                <tr>
+                    <td>{{ c[0] }}</td>
+                    <td>{{ c[1] }}</td>
+                    <td>{{ c[2] }}</td>
+                    <td>{{ c[3] }}</td>
+                    <td>{{ c[4] }}</td>
+                </tr>
+                {% endfor %}
+            </table>
 
-                    {% for c in hoy %}
-                    <tr>
-                        <td>{{ c[0] }}</td>
-                        <td>{{ c[1] }}</td>
-                        <td>{{ c[2] }}</td>
-                        <td>{{ c[3] }}</td>
-                        <td class="estado">{{ c[4] }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
+        {% elif rol == "Administrador" %}
 
-            <div class="big-card">
-                <h3 style="margin-top:0;color:#198754;font-weight:900;">Próximas Citas</h3>
+            <h3>Panel administrativo institucional</h3>
 
-                <table>
-                    <tr>
-                        <th>Paciente</th>
-                        <th>Fecha</th>
-                        <th>Hora</th>
-                        <th>Motivo</th>
-                        <th>Estado</th>
-                    </tr>
+            <h3 style="margin-top:25px;">Usuarios registrados</h3>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Usuario</th>
+                    <th>Rol</th>
+                    <th>NPI</th>
+                    <th>Admin Code</th>
+                </tr>
 
-                    {% for c in proximas %}
-                    <tr>
-                        <td>{{ c[0] }}</td>
-                        <td>{{ c[1] }}</td>
-                        <td>{{ c[2] }}</td>
-                        <td>{{ c[3] }}</td>
-                        <td class="estado">{{ c[4] }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
+                {% for u in usuarios %}
+                <tr>
+                    <td>{{ u[0] }}</td>
+                    <td>{{ u[1] }}</td>
+                    <td>{{ u[2] }}</td>
+                    <td>{{ u[3] if u[3] else "-" }}</td>
+                    <td>{{ u[4] if u[4] else "-" }}</td>
+                </tr>
+                {% endfor %}
+            </table>
 
-        {% else %}
+            <h3 style="margin-top:35px;">Citas registradas</h3>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Paciente</th>
+                    <th>Médico</th>
+                    <th>Fecha</th>
+                    <th>Hora</th>
+                    <th>Motivo</th>
+                    <th>Estado</th>
+                </tr>
 
-            <div class="big-card">
-                <h3 style="margin-top:0;color:#198754;font-weight:900;">Panel Administrador</h3>
-                <p style="color:#6c757d;">Este panel se puede extender para gestión de usuarios, médicos e IPS.</p>
-            </div>
+                {% for c in citas %}
+                <tr>
+                    <td>{{ c[0] }}</td>
+                    <td>{{ c[1] }}</td>
+                    <td>{{ c[2] }}</td>
+                    <td>{{ c[3] }}</td>
+                    <td>{{ c[4] }}</td>
+                    <td>{{ c[5] }}</td>
+                    <td>{{ c[6] }}</td>
+                </tr>
+                {% endfor %}
+            </table>
 
         {% endif %}
 
     </div>
 
+</div>
+
+<!-- FOOTER -->
+<div class="footer" id="contactos">
+    <div class="footer-grid">
+
+        <div>
+            <h4>CITASYA - Contactos</h4>
+            <p>Daniel Jose Buelvas Donado</p>
+            <p>Teléfono: 3227762801</p>
+            <p>Giraldo Rincon Iris</p>
+            <p>Teléfono: 300 8472025</p>
+        </div>
+
+        <div>
+            <h4>Servicios</h4>
+            <p>Agendamiento de citas</p>
+            <p>Atención al afiliado</p>
+            <p>Red de atención</p>
+            <p>Autorizaciones médicas</p>
+        </div>
+
+        <div>
+            <h4>Información institucional</h4>
+            <p>Política de privacidad</p>
+            <p>Términos y condiciones</p>
+            <p>Canales de atención</p>
+            <p>Soporte y PQRS</p>
+        </div>
+
+    </div>
+
+    <small>
+        CITASYA © 2026 - Sistema institucional EPS / IPS. Todos los derechos reservados.
+    </small>
+</div>
+
 </body>
 </html>
 """
-
 # ---------------------------------------------------
 # RUTAS
 # ---------------------------------------------------
@@ -989,6 +1392,8 @@ def login():
         if resultado != None:
             session["usuario"] = resultado[0]
             session["rol"] = resultado[1]
+            session["npi"] = resultado[2]
+            session["admin_code"] = resultado[3]
             return redirect(url_for("dashboard"))
         else:
             error = "Usuario o contraseña incorrectos. Intenta nuevamente."
@@ -1005,15 +1410,23 @@ def register():
         password = request.form.get("password")
         rol = request.form.get("rol")
 
-        if usuario == "" or password == "" or rol == "":
-            error = "Todos los campos son obligatorios."
-        else:
-            registrado, mensaje = registrar_usuario(usuario, password, rol)
+        npi = request.form.get("npi")
+        admin_code = request.form.get("admin_code")
 
-            if registrado:
-                return redirect(url_for("login", success="Registro exitoso. Ahora puedes iniciar sesión."))
-            else:
-                error = mensaje
+        if rol == "Medico" and (npi == None or npi.strip() == ""):
+            error = "El NPI es obligatorio para médicos."
+            return render_template_string(REGISTER_HTML, error=error)
+
+        if rol == "Administrador" and (admin_code == None or admin_code.strip() == ""):
+            error = "El código administrativo es obligatorio para administradores."
+            return render_template_string(REGISTER_HTML, error=error)
+
+        registrado, mensaje = registrar_usuario(usuario, password, rol, npi, admin_code)
+
+        if registrado:
+            return redirect(url_for("login", success="Registro exitoso. Ahora puedes iniciar sesión."))
+        else:
+            error = mensaje
 
     return render_template_string(REGISTER_HTML, error=error)
 
@@ -1033,6 +1446,10 @@ def dashboard():
     hoy = obtener_citas_doctor_hoy(usuario)
     proximas = obtener_proximas_citas_doctor(usuario)
 
+    total_usuarios, total_pacientes, total_medicos, total_citas, citas_pendientes = obtener_resumen_admin()
+    usuarios = obtener_usuarios()
+    citas = obtener_todas_citas()
+
     mensaje = request.args.get("msg")
 
     return render_template_string(
@@ -1044,7 +1461,14 @@ def dashboard():
         pendientes=pendientes,
         hoy=hoy,
         proximas=proximas,
-        mensaje=mensaje
+        mensaje=mensaje,
+        total_usuarios=total_usuarios,
+        total_pacientes=total_pacientes,
+        total_medicos=total_medicos,
+        total_citas=total_citas,
+        citas_pendientes=citas_pendientes,
+        usuarios=usuarios,
+        citas=citas
     )
 
 
@@ -1069,10 +1493,40 @@ def agendar():
     return redirect(url_for("dashboard", msg="Cita agendada exitosamente."))
 
 
+@app.route("/admin/eliminar_usuario", methods=["POST"])
+def admin_eliminar_usuario():
+    if "usuario" not in session:
+        return redirect(url_for("login"))
+
+    if session["rol"] != "Administrador":
+        return redirect(url_for("dashboard"))
+
+    id_usuario = request.form.get("id_usuario")
+    eliminar_usuario(id_usuario)
+
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/admin/eliminar_cita", methods=["POST"])
+def admin_eliminar_cita():
+    if "usuario" not in session:
+        return redirect(url_for("login"))
+
+    if session["rol"] != "Administrador":
+        return redirect(url_for("dashboard"))
+
+    id_cita = request.form.get("id_cita")
+    eliminar_cita(id_cita)
+
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/logout")
 def logout():
     session.pop("usuario", None)
     session.pop("rol", None)
+    session.pop("npi", None)
+    session.pop("admin_code", None)
     return redirect(url_for("login"))
 
 
